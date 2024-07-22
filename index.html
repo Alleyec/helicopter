@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Helicopter Game</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+        }
+        #gameCanvas {
+            display: block;
+            background-color: #87CEEB;
+        }
+        #score {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            font-size: 24px;
+            color: white;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+        }
+        #startBtn {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            padding: 10px 20px;
+            font-size: 18px;
+            cursor: pointer;
+            background-color: #f44336;
+            color: white;
+            border: none;
+            border-radius: 5px;
+        }
+        #muteBtn {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            padding: 5px 10px;
+            font-size: 14px;
+            cursor: pointer;
+            background-color: rgba(255, 255, 255, 0.5);
+            border: none;
+            border-radius: 5px;
+        }
+        #gameOverMessage {
+            position: absolute;
+            top: 40%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 36px;
+            color: white;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+            text-align: center;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+    <div id="score">Score: 0</div>
+    <button id="startBtn">Start Game</button>
+    <button id="muteBtn">🔊</button>
+    <div id="gameOverMessage"></div>
+
+    <script>
+        let canvas, ctx;
+        let helicopter, obstacles = [], clouds = [];
+        let score = 0, gameOver = false;
+        let keys = {};
+        let isMuted = false;
+
+        // Audio context for 8-bit music
+        let audioCtx;
+        let oscillator;
+        let gainNode;
+
+        // 8-bit music notes
+        const notes = [
+            261.63, 293.66, 329.63, 349.23, 392.00, 440.00, 493.88, 523.25,
+            493.88, 440.00, 392.00, 349.23, 329.63, 293.66, 261.63
+        ];
+        let currentNote = 0;
+
+        const moveSound = new Audio('https://opengameart.org/sites/default/files/jumppp11.mp3');
+        const collisionSound = new Audio('https://opengameart.org/sites/default/files/explosion.mp3');
+
+        // Lower the volume of sound effects
+        moveSound.volume = 0.2;
+        collisionSound.volume = 0.2;
+
+        const buildingColors = ['#8B4513', '#D2691E', '#CD853F', '#DEB887', '#A0522D'];
+
+        window.onload = function() {
+            canvas = document.getElementById('gameCanvas');
+            ctx = canvas.getContext('2d');
+            resizeCanvas();
+
+            document.getElementById('startBtn').onclick = startGame;
+            document.getElementById('muteBtn').onclick = toggleMute;
+            window.addEventListener('resize', resizeCanvas);
+            
+            window.addEventListener('keydown', handleKeyDown);
+            window.addEventListener('keyup', handleKeyUp);
+            canvas.addEventListener('touchstart', handleTouch);
+            canvas.addEventListener('touchend', handleTouchEnd);
+
+            // Initialize audio context
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            gainNode = audioCtx.createGain();
+            gainNode.connect(audioCtx.destination);
+            // Set initial volume to a lower level
+            gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime);
+        }
+
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+
+        function handleKeyDown(e) {
+            keys[e.code] = true;
+            if (e.code === 'Space' && helicopter) {
+                helicopter.fly();
+                e.preventDefault();
+            }
+        }
+
+        function handleKeyUp(e) {
+            keys[e.code] = false;
+        }
+
+        function handleTouch(e) {
+            e.preventDefault();
+            if (helicopter) {
+                helicopter.fly();
+            }
+        }
+
+        function handleTouchEnd(e) {
+            e.preventDefault();
+        }
+
+        function toggleMute() {
+            isMuted = !isMuted;
+            if (isMuted) {
+                gainNode.gain.setValueAtTime(0, audioCtx.currentTime);
+            } else {
+                gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime);
+            }
+            moveSound.muted = isMuted;
+            collisionSound.muted = isMuted;
+            document.getElementById('muteBtn').textContent = isMuted ? '🔇' : '🔊';
+        }
+
+        function play8BitMusic() {
+            oscillator = audioCtx.createOscillator();
+            oscillator.type = 'square';
+            oscillator.frequency.setValueAtTime(notes[currentNote], audioCtx.currentTime);
+            oscillator.connect(gainNode);
+            oscillator.start();
+
+            // Change note every 0.2 seconds
+            setInterval(() => {
+                currentNote = (currentNote + 1) % notes.length;
+                oscillator.frequency.setValueAtTime(notes[currentNote], audioCtx.currentTime);
+            }, 200);
+        }
+
+        function stop8BitMusic() {
+            if (oscillator) {
+                oscillator.stop();
+            }
+        }
+
+        class Cloud {
+            constructor() {
+                this.x = canvas.width;
+                this.y = Math.random() * canvas.height / 2;
+                this.width = Math.random() * 100 + 50;
+                this.height = this.width * 0.6;
+                this.speed = Math.random() * 0.5 + 0.5;
+            }
+
+            draw() {
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.width / 2, Math.PI * 0.5, Math.PI * 1.5);
+                ctx.arc(this.x + this.width * 0.5, this.y - this.height * 0.5, this.height, Math.PI * 1, Math.PI * 2);
+                ctx.arc(this.x + this.width, this.y, this.width / 2, Math.PI * 1.5, Math.PI * 0.5);
+                ctx.closePath();
+                ctx.fill();
+            }
+
+            update() {
+                this.x -= this.speed;
+                if (this.x + this.width < 0) {
+                    this.x = canvas.width;
+                    this.y = Math.random() * canvas.height / 2;
+                }
+                this.draw();
+            }
+        }
+
+        class Helicopter {
+            constructor() {
+                this.width = 100;
+                this.height = 50;
+                this.x = 100;
+                this.y = canvas.height / 2 - this.height / 2;
+                this.speed = 3;
+                this.gravity = 0.2;
+                this.lift = -5;
+                this.velocity = 0;
+                this.rotorAngle = 0;
+            }
+
+            draw() {
+                ctx.save();
+                ctx.translate(this.x, this.y);
+                
+                // Flip the helicopter horizontally
+                ctx.scale(-1, 1);
+                ctx.translate(-this.width, 0);
+
+                // Main body
+                ctx.fillStyle = '#FF4500';
+                ctx.beginPath();
+                ctx.ellipse(this.width * 0.5, this.height * 0.5, this.width * 0.45, this.height * 0.3, 0, 0, Math.PI * 2);
+                ctx.fill();
+
+                // Tail boom
+                ctx.fillStyle = '#FF6347';
+                ctx.fillRect(this.width * 0.8, this.height * 0.4, this.width * 0.5, this.height * 0.2);
+
+                // Tail rotor
+                ctx.fillStyle = '#4682B4';
+                ctx.fillRect(this.width * 1.25, this.height * 0.3, this.width * 0.05, this.height * 0.4);
+
+                // Cockpit
+                ctx.fillStyle = '#4682B4';
+                ctx.beginPath();
+                ctx.ellipse(this.width * 0.25, this.height * 0.5, this.width * 0.2, this.height * 0.25, 0, 0, Math.PI * 2);
+                ctx.fill();
+
+                // Main rotor
+                ctx.strokeStyle = '#000000';
+                ctx.lineWidth = 3;
+                ctx.save();
+                ctx.translate(this.width * 0.5, this.height * 0.1);
+                ctx.rotate(this.rotorAngle);
+                ctx.beginPath();
+                ctx.moveTo(-this.width * 0.6, 0);
+                ctx.lineTo(this.width * 0.6, 0);
+                ctx.stroke();
+                ctx.restore();
+
+                // Update rotor angle
+                this.rotorAngle += 0.5;
+
+                ctx.restore();
+            }
+
+            update() {
+                if (keys['ArrowUp']) {
+                    this.velocity += this.lift * 0.1;
+                }
+
+                if (keys['ArrowLeft']) {
+                    this.x -= this.speed;
+                }
+                if (keys['ArrowRight']) {
+                    this.x += this.speed;
+                }
+
+                this.velocity += this.gravity;
+                this.y += this.velocity;
+
+                this.x = Math.max(0, Math.min(this.x, canvas.width - this.width));
+                this.y = Math.max(0, Math.min(this.y, canvas.height - this.height));
+
+                this.draw();
+            }
+
+            fly() {
+                this.velocity = this.lift;
+                moveSound.play();
+            }
+        }
+
+        class Obstacle {
+            constructor(x = canvas.width) {
+                this.width = 120;
+                this.gap = helicopter.height * 6;
+                this.minTopHeight = 100;
+                this.maxTopHeight = canvas.height - this.gap - this.minTopHeight;
+                this.top = Math.random() * (this.maxTopHeight - this.minTopHeight) + this.minTopHeight;
+                this.bottom = canvas.height - this.top - this.gap;
+                this.x = x;
+                this.speed = 2;
+                this.color = buildingColors[Math.floor(Math.random() * buildingColors.length)];
+            }
+
+            drawBuilding(x, y, width, height) {
+                ctx.fillStyle = this.color;
+                ctx.fillRect(x, y, width, height);
+
+                // Draw windows
+                const windowWidth = 15;
+                const windowHeight = 20;
+                const windowSpacingX = 25;
+                const windowSpacingY = 30;
+                
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+                for (let i = x + 10; i < x + width - windowWidth; i += windowSpacingX) {
+                    for (let j = y + 10; j < y + height - windowHeight; j += windowSpacingY) {
+                        ctx.fillRect(i, j, windowWidth, windowHeight);
+                    }
+                }
+            }
+
+            draw() {
+                this.drawBuilding(this.x, 0, this.width, this.top);
+                this.drawBuilding(this.x, canvas.height - this.bottom, this.width, this.bottom);
+            }
+
+            update() {
+                this.x -= this.speed;
+                if (this.x + this.width < 0) {
+                    this.reset();
+                }
+                this.draw();
+            }
+
+            reset() {
+                this.x = canvas.width;
+                this.top = Math.random() * (this.maxTopHeight - this.minTopHeight) + this.minTopHeight;
+                this.bottom = canvas.height - this.top - this.gap;
+                this.color = buildingColors[Math.floor(Math.random() * buildingColors.length)];
+            }
+
+            collided(heli) {
+                if (heli.x < this.x + this.width &&
+                    heli.x + heli.width > this.x &&
+                    (heli.y < this.top || heli.y + heli.height > canvas.height - this.bottom)) {
+                    return true;
+                }
+                return false;
+            }
+        }
+
+        function startGame() {
+            document.getElementById('startBtn').style.display = 'none';
+            document.getElementById('gameOverMessage').style.display = 'none';
+            audioCtx.resume().then(() => {
+                play8BitMusic();
+            });
+            helicopter = new Helicopter();
+            obstacles = [];
+            clouds = [];
+            score = 0;
+            gameOver = false;
+
+            const obstacleSpacing = canvas.width * 0.75;
+            for (let i = 0; i < 5; i++) {
+                obstacles.push(new Obstacle(canvas.width + i * obstacleSpacing));
+            }
+
+            for (let i = 0; i < 3; i++) {
+                clouds.push(new Cloud());
+            }
+
+            gameLoop();
+        }
+
+        function gameLoop() {
+            if (gameOver) return;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            for (let cloud of clouds) {
+                cloud.update();
+            }
+
+            helicopter.update();
+
+            for (let obstacle of obstacles) {
+                obstacle.update();
+                if (obstacle.collided(helicopter)) {
+                    collisionSound.play();
+                    endGame();
+                }
+            }
+
+            score++;
+            document.getElementById('score').innerText = 'Score: ' + score;
+            requestAnimationFrame(gameLoop);
+        }
+
+        function endGame() {
+            gameOver = true;
+            stop8BitMusic();
+            showGameOverMessage();
+            document.getElementById('startBtn').innerText = 'Restart Game';
+            document.getElementById('startBtn').style.display = 'block';
+        }
+
+        function showGameOverMessage() {
+            const gameOverMessage = document.getElementById('gameOverMessage');
+            gameOverMessage.innerHTML = `Game Over!<br>Your Score: ${score}`;
+            gameOverMessage.style.display = 'block';
+        }
+    </script>
+</body>
+</html>
